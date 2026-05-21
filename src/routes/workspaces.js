@@ -11,7 +11,12 @@ router.get('/', authenticate, async (req, res) => {
       `SELECT w.*,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id) as total_tasks,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks,
-              (SELECT COUNT(*) FROM workspace_members WHERE workspace_id = w.id) as member_count
+              (SELECT COUNT(*) FROM workspace_members WHERE workspace_id = w.id) as member_count,
+              COALESCE(
+                (SELECT array_agg(user_id ORDER BY user_id)
+                 FROM workspace_members WHERE workspace_id = w.id),
+                ARRAY[]::integer[]
+              ) as member_ids
        FROM workspaces w
        ORDER BY w.created_at DESC`
     );
@@ -35,7 +40,12 @@ router.get('/:id', authenticate, async (req, res) => {
     const result = await pool.query(
       `SELECT w.*,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id) as total_tasks,
-              (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks
+              (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks,
+              COALESCE(
+                (SELECT array_agg(user_id ORDER BY user_id)
+                 FROM workspace_members WHERE workspace_id = w.id),
+                ARRAY[]::integer[]
+              ) as member_ids
        FROM workspaces w
        WHERE w.id = $1`,
       [req.params.id]
