@@ -141,6 +141,7 @@ router.post('/', authenticate, async (req, res) => {
     const {
       title,
       description,
+      status,
       priority,
       workspace_id,
       assignee_id,
@@ -172,16 +173,22 @@ router.post('/', authenticate, async (req, res) => {
     const workspace = workspaceResult.rows[0];
     const issueNumber = workspace.next_issue_number;
 
-    // Create task
+    // Create task. If status is supplied (e.g. "done" when logging a task
+    // after the fact), use it; otherwise the column default of 'todo' applies.
+    const taskStatus = status || 'todo';
+    const completedAt = taskStatus === 'done' ? new Date() : null;
+
     const result = await pool.query(
       `INSERT INTO tasks (
-        title, description, priority, workspace_id, project_code,
-        issue_number, assignee_id, assigned_by_id, estimated_hours, deadline
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        title, description, status, priority, workspace_id, project_code,
+        issue_number, assignee_id, assigned_by_id, estimated_hours, deadline,
+        completed_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *`,
       [
         title,
         description,
+        taskStatus,
         priority || 'medium',
         workspace_id,
         workspace.project_code,
@@ -189,7 +196,8 @@ router.post('/', authenticate, async (req, res) => {
         assignee_id,
         req.user.id,
         estimated_hours || 0,
-        deadline
+        deadline,
+        completedAt
       ]
     );
 

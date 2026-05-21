@@ -9,6 +9,7 @@ const userRoutes = require('./routes/users');
 const taskRoutes = require('./routes/tasks');
 const workspaceRoutes = require('./routes/workspaces');
 const teamRoutes = require('./routes/teams');
+const exportRoutes = require('./routes/export');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,6 +28,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/teams', teamRoutes);
+app.use('/api/export', exportRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

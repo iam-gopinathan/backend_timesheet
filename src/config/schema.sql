@@ -3,7 +3,7 @@
 -- Create enum types
 CREATE TYPE user_role AS ENUM ('employee', 'team_lead', 'management');
 CREATE TYPE task_status AS ENUM ('todo', 'in_progress', 'review', 'done');
-CREATE TYPE task_priority AS ENUM ('low', 'medium', 'high', 'critical');
+CREATE TYPE task_priority AS ENUM ('low', 'medium', 'high', 'highest');
 
 -- Teams table
 CREATE TABLE teams (
