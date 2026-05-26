@@ -1,5 +1,7 @@
--- Timesheet Database Schema (MySQL)
+const mysql = require('mysql2/promise');
+require('dotenv').config();
 
+const schema = `
 -- Teams table
 CREATE TABLE IF NOT EXISTS teams (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -117,20 +119,59 @@ CREATE TABLE IF NOT EXISTS time_logs (
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
+`;
 
--- Create indexes for better performance
-CREATE INDEX idx_tasks_assignee ON tasks(assignee_id);
-CREATE INDEX idx_tasks_workspace ON tasks(workspace_id);
-CREATE INDEX idx_tasks_status ON tasks(status);
-CREATE INDEX idx_users_team ON users(team_id);
-CREATE INDEX idx_users_email ON users(email);
-
+const seedData = `
 -- Insert default teams
-INSERT INTO teams (name, description) VALUES
-    ('Development', 'Software Development Team'),
-    ('QA', 'Quality Assurance Team'),
-    ('Design', 'UI/UX Design Team');
+INSERT IGNORE INTO teams (id, name, description) VALUES
+    (1, 'Development', 'Software Development Team'),
+    (2, 'QA', 'Quality Assurance Team'),
+    (3, 'Design', 'UI/UX Design Team');
 
 -- Insert default admin user (password: admin123)
-INSERT INTO users (name, email, password, role, designation) VALUES
-    ('Admin User', 'admin@company.com', '$2a$10$rKN3uZx.9HVMPkVx1xOvZeY8Qj8nX5QFq5HvLJY5ZzKvJ5.X5Qz5W', 'management', 'System Administrator');
+INSERT IGNORE INTO users (id, name, email, password, role, designation) VALUES
+    (1, 'Admin User', 'admin@company.com', '$2a$10$rKN3uZx.9HVMPkVx1xOvZeY8Qj8nX5QFq5HvLJY5ZzKvJ5.X5Qz5W', 'management', 'System Administrator');
+`;
+
+async function setupDatabase() {
+  let connection;
+
+  try {
+    connection = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT || 3306,
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      ssl: { rejectUnauthorized: false },
+      multipleStatements: true
+    });
+
+    console.log('Connected to MySQL database...');
+
+    // Run schema
+    console.log('Creating tables...');
+    await connection.query(schema);
+    console.log('Tables created successfully!');
+
+    // Run seed data
+    console.log('Inserting default data...');
+    await connection.query(seedData);
+    console.log('Default data inserted!');
+
+    console.log('\n✅ Database setup completed successfully!');
+    console.log('\nDefault admin login:');
+    console.log('  Email: admin@company.com');
+    console.log('  Password: admin123');
+
+  } catch (error) {
+    console.error('Error setting up database:', error.message);
+  } finally {
+    if (connection) {
+      await connection.end();
+    }
+    process.exit();
+  }
+}
+
+setupDatabase();
