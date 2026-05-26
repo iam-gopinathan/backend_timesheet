@@ -7,7 +7,7 @@ const router = express.Router();
 // Get all workspaces
 router.get('/', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT w.*,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id) as total_tasks,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks,
@@ -23,7 +23,7 @@ router.get('/', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows
+      data: rows
     });
   } catch (error) {
     console.error('Get workspaces error:', error);
@@ -37,7 +37,7 @@ router.get('/', authenticate, async (req, res) => {
 // Get single workspace
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT w.*,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id) as total_tasks,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks,
@@ -47,11 +47,11 @@ router.get('/:id', authenticate, async (req, res) => {
                 ARRAY[]::integer[]
               ) as member_ids
        FROM workspaces w
-       WHERE w.id = $1`,
+       WHERE w.id = ?`,
       [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Workspace not found'
@@ -59,19 +59,19 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     // Get members
-    const members = await pool.query(
+    const [members] = await pool.query(
       `SELECT u.id, u.name, u.email, u.designation, u.avatar_url
        FROM workspace_members wm
        JOIN users u ON wm.user_id = u.id
-       WHERE wm.workspace_id = $1`,
+       WHERE wm.workspace_id = ?`,
       [req.params.id]
     );
 
     res.json({
       success: true,
       data: {
-        ...result.rows[0],
-        members: members.rows
+        ...rows[0],
+        members: members
       }
     });
   } catch (error) {
@@ -89,12 +89,12 @@ router.post('/', authenticate, authorize('management', 'team_lead'), async (req,
     const { name, description, project_code, color, icon, member_ids } = req.body;
 
     // Check if project code exists
-    const existing = await pool.query(
-      'SELECT id FROM workspaces WHERE project_code = $1',
+    const [existing] = await pool.query(
+      'SELECT id FROM workspaces WHERE project_code = ?',
       [project_code.toUpperCase()]
     );
 
-    if (existing.rows.length > 0) {
+    if (existing.length > 0) {
       return res.status(400).json({
         success: false,
         message: 'Project code already exists'
@@ -102,24 +102,26 @@ router.post('/', authenticate, authorize('management', 'team_lead'), async (req,
     }
 
     // Create workspace
-    const result = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO workspaces (name, description, project_code, color, icon, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [name, description, project_code.toUpperCase(), color || '#0052CC', icon || 'folder', req.user.id]
     );
 
-    const workspace = result.rows[0];
+    const workspaceId = result.insertId;
+
+    // Get the created workspace
+    const [workspaces] = await pool.query('SELECT * FROM workspaces WHERE id = ?', [workspaceId]);
+    const workspace = workspaces[0];
 
     // Add members
     if (member_ids && member_ids.length > 0) {
-      const memberValues = member_ids.map(
-        (userId, index) => `($1, $${index + 2})`
-      ).join(', ');
+      const memberValues = member_ids.map(() => '(?, ?)').join(', ');
+      const memberParams = member_ids.flatMap(userId => [workspaceId, userId]);
 
       await pool.query(
         `INSERT INTO workspace_members (workspace_id, user_id) VALUES ${memberValues}`,
-        [workspace.id, ...member_ids]
+        memberParams
       );
     }
 
@@ -142,18 +144,20 @@ router.put('/:id', authenticate, authorize('management', 'team_lead'), async (re
   try {
     const { name, description, color, icon } = req.body;
 
-    const result = await pool.query(
+    await pool.query(
       `UPDATE workspaces
-       SET name = COALESCE($1, name),
-           description = COALESCE($2, description),
-           color = COALESCE($3, color),
-           icon = COALESCE($4, icon)
-       WHERE id = $5
-       RETURNING *`,
+       SET name = COALESCE(?, name),
+           description = COALESCE(?, description),
+           color = COALESCE(?, color),
+           icon = COALESCE(?, icon)
+       WHERE id = ?`,
       [name, description, color, icon, req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    // Get the updated workspace
+    const [rows] = await pool.query('SELECT * FROM workspaces WHERE id = ?', [req.params.id]);
+
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Workspace not found'
@@ -163,7 +167,7 @@ router.put('/:id', authenticate, authorize('management', 'team_lead'), async (re
     res.json({
       success: true,
       message: 'Workspace updated successfully',
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Update workspace error:', error);
@@ -180,7 +184,7 @@ router.post('/:id/members', authenticate, authorize('management', 'team_lead'), 
     const { user_id } = req.body;
 
     await pool.query(
-      'INSERT INTO workspace_members (workspace_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      'INSERT IGNORE INTO workspace_members (workspace_id, user_id) VALUES (?, ?)',
       [req.params.id, user_id]
     );
 
@@ -201,7 +205,7 @@ router.post('/:id/members', authenticate, authorize('management', 'team_lead'), 
 router.delete('/:id/members/:userId', authenticate, authorize('management', 'team_lead'), async (req, res) => {
   try {
     await pool.query(
-      'DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2',
+      'DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?',
       [req.params.id, req.params.userId]
     );
 
@@ -221,12 +225,12 @@ router.delete('/:id/members/:userId', authenticate, authorize('management', 'tea
 // Delete workspace
 router.delete('/:id', authenticate, authorize('management'), async (req, res) => {
   try {
-    const result = await pool.query(
-      'DELETE FROM workspaces WHERE id = $1 RETURNING id',
+    const [result] = await pool.query(
+      'DELETE FROM workspaces WHERE id = ?',
       [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
         message: 'Workspace not found'

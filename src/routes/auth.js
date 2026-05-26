@@ -12,12 +12,12 @@ router.post('/register', async (req, res) => {
     const { name, email, password, role, designation, team_id } = req.body;
 
     // Check if user exists
-    const existingUser = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
+    const [existingUser] = await pool.query(
+      'SELECT id FROM users WHERE email = ?',
       [email]
     );
 
-    if (existingUser.rows.length > 0) {
+    if (existingUser.length > 0) {
       return res.status(400).json({
         success: false,
         message: 'Email already registered'
@@ -28,14 +28,19 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create user
-    const result = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO users (name, email, password, role, designation, team_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, name, email, role, designation, team_id, created_at`,
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [name, email, hashedPassword, role || 'employee', designation, team_id]
     );
 
-    const user = result.rows[0];
+    // Get the created user
+    const [users] = await pool.query(
+      'SELECT id, name, email, role, designation, team_id, created_at FROM users WHERE id = ?',
+      [result.insertId]
+    );
+
+    const user = users[0];
 
     // Generate token
     const token = jwt.sign(
@@ -68,20 +73,20 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     // Find user
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, name, email, password, role, designation, team_id, avatar_url
-       FROM users WHERE email = $1 AND is_active = true`,
+       FROM users WHERE email = ? AND is_active = true`,
       [email]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
       });
     }
 
-    const user = result.rows[0];
+    const user = rows[0];
 
     // Check password
     const isValidPassword = await bcrypt.compare(password, user.password);
@@ -123,18 +128,18 @@ router.post('/login', async (req, res) => {
 // Get current user
 router.get('/me', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT u.id, u.name, u.email, u.role, u.designation, u.team_id,
               u.avatar_url, u.phone, u.joined_date, t.name as team_name
        FROM users u
        LEFT JOIN teams t ON u.team_id = t.id
-       WHERE u.id = $1`,
+       WHERE u.id = ?`,
       [req.user.id]
     );
 
     res.json({
       success: true,
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Get me error:', error);
@@ -151,12 +156,12 @@ router.put('/change-password', authenticate, async (req, res) => {
     const { currentPassword, newPassword } = req.body;
 
     // Get user with password
-    const result = await pool.query(
-      'SELECT password FROM users WHERE id = $1',
+    const [rows] = await pool.query(
+      'SELECT password FROM users WHERE id = ?',
       [req.user.id]
     );
 
-    const user = result.rows[0];
+    const user = rows[0];
 
     // Verify current password
     const isValid = await bcrypt.compare(currentPassword, user.password);
@@ -172,7 +177,7 @@ router.put('/change-password', authenticate, async (req, res) => {
 
     // Update password
     await pool.query(
-      'UPDATE users SET password = $1 WHERE id = $2',
+      'UPDATE users SET password = ? WHERE id = ?',
       [hashedPassword, req.user.id]
     );
 

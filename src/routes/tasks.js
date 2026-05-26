@@ -21,50 +21,43 @@ router.get('/', authenticate, async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
-    let paramIndex = 1;
 
     // Filter by user role
     if (req.user.role === 'employee') {
-      query += ` AND t.assignee_id = $${paramIndex}`;
+      query += ` AND t.assignee_id = ?`;
       params.push(req.user.id);
-      paramIndex++;
     } else if (req.user.role === 'team_lead') {
-      query += ` AND t.assignee_id IN (SELECT id FROM users WHERE team_id = $${paramIndex})`;
+      query += ` AND t.assignee_id IN (SELECT id FROM users WHERE team_id = ?)`;
       params.push(req.user.team_id);
-      paramIndex++;
     }
 
     if (status) {
-      query += ` AND t.status = $${paramIndex}`;
+      query += ` AND t.status = ?`;
       params.push(status);
-      paramIndex++;
     }
 
     if (priority) {
-      query += ` AND t.priority = $${paramIndex}`;
+      query += ` AND t.priority = ?`;
       params.push(priority);
-      paramIndex++;
     }
 
     if (workspace_id) {
-      query += ` AND t.workspace_id = $${paramIndex}`;
+      query += ` AND t.workspace_id = ?`;
       params.push(workspace_id);
-      paramIndex++;
     }
 
     if (assignee_id) {
-      query += ` AND t.assignee_id = $${paramIndex}`;
+      query += ` AND t.assignee_id = ?`;
       params.push(assignee_id);
-      paramIndex++;
     }
 
     query += ' ORDER BY t.created_at DESC';
 
-    const result = await pool.query(query, params);
+    const [rows] = await pool.query(query, params);
 
     res.json({
       success: true,
-      data: result.rows
+      data: rows
     });
   } catch (error) {
     console.error('Get tasks error:', error);
@@ -78,7 +71,7 @@ router.get('/', authenticate, async (req, res) => {
 // Get single task
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT t.*,
               w.name as workspace_name, w.color as workspace_color,
               u.name as assignee_name, u.avatar_url as assignee_avatar,
@@ -87,11 +80,11 @@ router.get('/:id', authenticate, async (req, res) => {
        LEFT JOIN workspaces w ON t.workspace_id = w.id
        LEFT JOIN users u ON t.assignee_id = u.id
        LEFT JOIN users ab ON t.assigned_by_id = ab.id
-       WHERE t.id = $1`,
+       WHERE t.id = ?`,
       [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Task not found'
@@ -99,21 +92,21 @@ router.get('/:id', authenticate, async (req, res) => {
     }
 
     // Get comments
-    const comments = await pool.query(
+    const [comments] = await pool.query(
       `SELECT c.*, u.name as user_name, u.avatar_url
        FROM task_comments c
        LEFT JOIN users u ON c.user_id = u.id
-       WHERE c.task_id = $1
+       WHERE c.task_id = ?
        ORDER BY c.created_at DESC`,
       [req.params.id]
     );
 
     // Get time logs
-    const timeLogs = await pool.query(
+    const [timeLogs] = await pool.query(
       `SELECT tl.*, u.name as user_name
        FROM time_logs tl
        LEFT JOIN users u ON tl.user_id = u.id
-       WHERE tl.task_id = $1
+       WHERE tl.task_id = ?
        ORDER BY tl.log_date DESC`,
       [req.params.id]
     );
@@ -121,9 +114,9 @@ router.get('/:id', authenticate, async (req, res) => {
     res.json({
       success: true,
       data: {
-        ...result.rows[0],
-        comments: comments.rows,
-        time_logs: timeLogs.rows
+        ...rows[0],
+        comments: comments,
+        time_logs: timeLogs
       }
     });
   } catch (error) {
@@ -141,7 +134,6 @@ router.post('/', authenticate, async (req, res) => {
     const {
       title,
       description,
-      status,
       priority,
       workspace_id,
       assignee_id,
@@ -158,37 +150,30 @@ router.post('/', authenticate, async (req, res) => {
     }
 
     // Get workspace and increment issue number
-    const workspaceResult = await pool.query(
-      'SELECT project_code, next_issue_number FROM workspaces WHERE id = $1',
+    const [workspaceRows] = await pool.query(
+      'SELECT project_code, next_issue_number FROM workspaces WHERE id = ?',
       [workspace_id]
     );
 
-    if (workspaceResult.rows.length === 0) {
+    if (workspaceRows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Workspace not found'
       });
     }
 
-    const workspace = workspaceResult.rows[0];
+    const workspace = workspaceRows[0];
     const issueNumber = workspace.next_issue_number;
 
-    // Create task. If status is supplied (e.g. "done" when logging a task
-    // after the fact), use it; otherwise the column default of 'todo' applies.
-    const taskStatus = status || 'todo';
-    const completedAt = taskStatus === 'done' ? new Date() : null;
-
-    const result = await pool.query(
+    // Create task
+    const [result] = await pool.query(
       `INSERT INTO tasks (
-        title, description, status, priority, workspace_id, project_code,
-        issue_number, assignee_id, assigned_by_id, estimated_hours, deadline,
-        completed_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-      RETURNING *`,
+        title, description, priority, workspace_id, project_code,
+        issue_number, assignee_id, assigned_by_id, estimated_hours, deadline
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         title,
         description,
-        taskStatus,
         priority || 'medium',
         workspace_id,
         workspace.project_code,
@@ -196,21 +181,23 @@ router.post('/', authenticate, async (req, res) => {
         assignee_id,
         req.user.id,
         estimated_hours || 0,
-        deadline,
-        completedAt
+        deadline
       ]
     );
 
     // Increment workspace issue number
     await pool.query(
-      'UPDATE workspaces SET next_issue_number = next_issue_number + 1 WHERE id = $1',
+      'UPDATE workspaces SET next_issue_number = next_issue_number + 1 WHERE id = ?',
       [workspace_id]
     );
+
+    // Get the created task
+    const [tasks] = await pool.query('SELECT * FROM tasks WHERE id = ?', [result.insertId]);
 
     res.status(201).json({
       success: true,
       message: 'Task created successfully',
-      data: result.rows[0]
+      data: tasks[0]
     });
   } catch (error) {
     console.error('Create task error:', error.message);
@@ -233,21 +220,23 @@ router.put('/:id', authenticate, async (req, res) => {
       completedAt = new Date();
     }
 
-    const result = await pool.query(
+    await pool.query(
       `UPDATE tasks
-       SET title = COALESCE($1, title),
-           description = COALESCE($2, description),
-           status = COALESCE($3, status),
-           priority = COALESCE($4, priority),
-           estimated_hours = COALESCE($5, estimated_hours),
-           deadline = COALESCE($6, deadline),
-           completed_at = $7
-       WHERE id = $8
-       RETURNING *`,
+       SET title = COALESCE(?, title),
+           description = COALESCE(?, description),
+           status = COALESCE(?, status),
+           priority = COALESCE(?, priority),
+           estimated_hours = COALESCE(?, estimated_hours),
+           deadline = COALESCE(?, deadline),
+           completed_at = ?
+       WHERE id = ?`,
       [title, description, status, priority, estimated_hours, deadline, completedAt, taskId]
     );
 
-    if (result.rows.length === 0) {
+    // Get the updated task
+    const [rows] = await pool.query('SELECT * FROM tasks WHERE id = ?', [taskId]);
+
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Task not found'
@@ -257,7 +246,7 @@ router.put('/:id', authenticate, async (req, res) => {
     res.json({
       success: true,
       message: 'Task updated successfully',
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Update task error:', error);
@@ -278,12 +267,15 @@ router.patch('/:id/status', authenticate, async (req, res) => {
       completedAt = new Date();
     }
 
-    const result = await pool.query(
-      `UPDATE tasks SET status = $1, completed_at = $2 WHERE id = $3 RETURNING *`,
+    await pool.query(
+      `UPDATE tasks SET status = ?, completed_at = ? WHERE id = ?`,
       [status, completedAt, req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    // Get the updated task
+    const [rows] = await pool.query('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
+
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Task not found'
@@ -293,7 +285,7 @@ router.patch('/:id/status', authenticate, async (req, res) => {
     res.json({
       success: true,
       message: 'Task status updated',
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Update status error:', error);
@@ -309,17 +301,19 @@ router.post('/:id/comments', authenticate, async (req, res) => {
   try {
     const { content } = req.body;
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO task_comments (task_id, user_id, content)
-       VALUES ($1, $2, $3)
-       RETURNING *`,
+       VALUES (?, ?, ?)`,
       [req.params.id, req.user.id, content]
     );
+
+    // Get the created comment
+    const [comments] = await pool.query('SELECT * FROM task_comments WHERE id = ?', [result.insertId]);
 
     res.status(201).json({
       success: true,
       message: 'Comment added',
-      data: result.rows[0]
+      data: comments[0]
     });
   } catch (error) {
     console.error('Add comment error:', error);
@@ -336,23 +330,25 @@ router.post('/:id/time-log', authenticate, async (req, res) => {
     const { hours, description, log_date } = req.body;
 
     // Insert time log
-    const result = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO time_logs (task_id, user_id, hours, description, log_date)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
+       VALUES (?, ?, ?, ?, ?)`,
       [req.params.id, req.user.id, hours, description, log_date || new Date()]
     );
 
     // Update task logged hours
     await pool.query(
-      `UPDATE tasks SET logged_hours = logged_hours + $1 WHERE id = $2`,
+      `UPDATE tasks SET logged_hours = logged_hours + ? WHERE id = ?`,
       [hours, req.params.id]
     );
+
+    // Get the created time log
+    const [timeLogs] = await pool.query('SELECT * FROM time_logs WHERE id = ?', [result.insertId]);
 
     res.status(201).json({
       success: true,
       message: 'Time logged',
-      data: result.rows[0]
+      data: timeLogs[0]
     });
   } catch (error) {
     console.error('Log time error:', error);
@@ -366,12 +362,12 @@ router.post('/:id/time-log', authenticate, async (req, res) => {
 // Delete task
 router.delete('/:id', authenticate, authorize('management', 'team_lead'), async (req, res) => {
   try {
-    const result = await pool.query(
-      'DELETE FROM tasks WHERE id = $1 RETURNING id',
+    const [result] = await pool.query(
+      'DELETE FROM tasks WHERE id = ?',
       [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
         message: 'Task not found'
@@ -398,27 +394,27 @@ router.get('/stats/overview', authenticate, async (req, res) => {
     const params = [];
 
     if (req.user.role === 'employee') {
-      whereClause = 'WHERE assignee_id = $1';
+      whereClause = 'WHERE assignee_id = ?';
       params.push(req.user.id);
     } else if (req.user.role === 'team_lead') {
-      whereClause = 'WHERE assignee_id IN (SELECT id FROM users WHERE team_id = $1)';
+      whereClause = 'WHERE assignee_id IN (SELECT id FROM users WHERE team_id = ?)';
       params.push(req.user.team_id);
     }
 
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'todo') as todo,
-        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
-        COUNT(*) FILTER (WHERE status = 'review') as review,
-        COUNT(*) FILTER (WHERE status = 'done') as done
+        SUM(CASE WHEN status = 'todo' THEN 1 ELSE 0 END) as todo,
+        SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
+        SUM(CASE WHEN status = 'review' THEN 1 ELSE 0 END) as review,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done
        FROM tasks ${whereClause}`,
       params
     );
 
     res.json({
       success: true,
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Get stats error:', error);

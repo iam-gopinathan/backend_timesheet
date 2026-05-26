@@ -45,33 +45,30 @@ router.get('/', authenticate, authorize('management', 'team_lead'), async (req, 
       WHERE 1=1
     `;
     const params = [];
-    let paramIndex = 1;
 
     if (team_id) {
-      query += ` AND u.team_id = $${paramIndex}`;
+      query += ` AND u.team_id = ?`;
       params.push(team_id);
-      paramIndex++;
     }
 
     if (role) {
-      query += ` AND u.role = $${paramIndex}`;
+      query += ` AND u.role = ?`;
       params.push(role);
-      paramIndex++;
     }
 
     // Team leads can only see their team members
     if (req.user.role === 'team_lead') {
-      query += ` AND u.team_id = $${paramIndex}`;
+      query += ` AND u.team_id = ?`;
       params.push(req.user.team_id);
     }
 
     query += ' ORDER BY u.name';
 
-    const result = await pool.query(query, params);
+    const [rows] = await pool.query(query, params);
 
     res.json({
       success: true,
-      data: result.rows
+      data: rows
     });
   } catch (error) {
     console.error('Get users error:', error);
@@ -85,16 +82,16 @@ router.get('/', authenticate, authorize('management', 'team_lead'), async (req, 
 // Get single user
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT u.id, u.name, u.email, u.role, u.designation, u.team_id,
               u.avatar_url, u.phone, u.joined_date, t.name as team_name
        FROM users u
        LEFT JOIN teams t ON u.team_id = t.id
-       WHERE u.id = $1`,
+       WHERE u.id = ?`,
       [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -103,7 +100,7 @@ router.get('/:id', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Get user error:', error);
@@ -120,12 +117,12 @@ router.post('/', authenticate, authorize('management'), async (req, res) => {
     const { name, email, password, role, designation, team_id, phone } = req.body;
 
     // Check if email exists
-    const existingUser = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
+    const [existingUser] = await pool.query(
+      'SELECT id FROM users WHERE email = ?',
       [email]
     );
 
-    if (existingUser.rows.length > 0) {
+    if (existingUser.length > 0) {
       return res.status(400).json({
         success: false,
         message: 'Email already exists'
@@ -135,17 +132,22 @@ router.post('/', authenticate, authorize('management'), async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const result = await pool.query(
+    const [result] = await pool.query(
       `INSERT INTO users (name, email, password, role, designation, team_id, phone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, name, email, role, designation, team_id, phone, joined_date`,
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [name, email, hashedPassword, role || 'employee', designation, team_id, phone]
+    );
+
+    // Get the created user
+    const [users] = await pool.query(
+      'SELECT id, name, email, role, designation, team_id, phone, joined_date FROM users WHERE id = ?',
+      [result.insertId]
     );
 
     res.status(201).json({
       success: true,
       message: 'User created successfully',
-      data: result.rows[0]
+      data: users[0]
     });
   } catch (error) {
     console.error('Create user error:', error);
@@ -170,18 +172,23 @@ router.put('/:id', authenticate, async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    await pool.query(
       `UPDATE users
-       SET name = COALESCE($1, name),
-           designation = COALESCE($2, designation),
-           team_id = COALESCE($3, team_id),
-           phone = COALESCE($4, phone)
-       WHERE id = $5
-       RETURNING id, name, email, role, designation, team_id, phone`,
+       SET name = COALESCE(?, name),
+           designation = COALESCE(?, designation),
+           team_id = COALESCE(?, team_id),
+           phone = COALESCE(?, phone)
+       WHERE id = ?`,
       [name, designation, team_id, phone, userId]
     );
 
-    if (result.rows.length === 0) {
+    // Get the updated user
+    const [rows] = await pool.query(
+      'SELECT id, name, email, role, designation, team_id, phone FROM users WHERE id = ?',
+      [userId]
+    );
+
+    if (rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -191,7 +198,7 @@ router.put('/:id', authenticate, async (req, res) => {
     res.json({
       success: true,
       message: 'User updated successfully',
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Update user error:', error);
@@ -225,7 +232,7 @@ router.post('/:id/avatar', authenticate, upload.single('avatar'), async (req, re
     const avatarUrl = `/uploads/${req.file.filename}`;
 
     await pool.query(
-      'UPDATE users SET avatar_url = $1 WHERE id = $2',
+      'UPDATE users SET avatar_url = ? WHERE id = ?',
       [avatarUrl, userId]
     );
 
@@ -286,12 +293,12 @@ router.post('/:id/reset-password', authenticate, authorize('management'), async 
 router.delete('/:id', authenticate, authorize('management'), async (req, res) => {
   try {
     // Soft delete - set is_active to false
-    const result = await pool.query(
-      'UPDATE users SET is_active = false WHERE id = $1 RETURNING id',
+    const [result] = await pool.query(
+      'UPDATE users SET is_active = false WHERE id = ?',
       [req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -316,17 +323,17 @@ router.get('/team/members', authenticate, async (req, res) => {
   try {
     const teamId = req.user.team_id;
 
-    const result = await pool.query(
+    const [rows] = await pool.query(
       `SELECT id, name, email, role, designation, avatar_url
        FROM users
-       WHERE team_id = $1 AND is_active = true
+       WHERE team_id = ? AND is_active = true
        ORDER BY name`,
       [teamId]
     );
 
     res.json({
       success: true,
-      data: result.rows
+      data: rows
     });
   } catch (error) {
     console.error('Get team members error:', error);
