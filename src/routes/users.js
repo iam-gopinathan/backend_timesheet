@@ -263,22 +263,28 @@ router.post('/:id/reset-password', authenticate, authorize('management'), async 
     }
 
     const hashed = await bcrypt.hash(newPassword, 10);
-    const result = await pool.query(
-      'UPDATE users SET password = $1 WHERE id = $2 RETURNING id, email, name',
+    const [result] = await pool.query(
+      'UPDATE users SET password = ? WHERE id = ?',
       [hashed, req.params.id]
     );
 
-    if (result.rows.length === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
+    // Get the updated user
+    const [rows] = await pool.query(
+      'SELECT id, email, name FROM users WHERE id = ?',
+      [req.params.id]
+    );
+
     res.json({
       success: true,
       message: 'Password reset successfully',
-      data: result.rows[0]
+      data: rows[0]
     });
   } catch (error) {
     console.error('Reset password error:', error);
