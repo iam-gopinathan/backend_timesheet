@@ -12,18 +12,20 @@ router.get('/', authenticate, async (req, res) => {
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id) as total_tasks,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks,
               (SELECT COUNT(*) FROM workspace_members WHERE workspace_id = w.id) as member_count,
-              COALESCE(
-                (SELECT array_agg(user_id ORDER BY user_id)
-                 FROM workspace_members WHERE workspace_id = w.id),
-                ARRAY[]::integer[]
-              ) as member_ids
+              (SELECT GROUP_CONCAT(user_id ORDER BY user_id) FROM workspace_members WHERE workspace_id = w.id) as member_ids
        FROM workspaces w
        ORDER BY w.created_at DESC`
     );
 
+    // Convert member_ids from comma-separated string to array
+    const data = rows.map(row => ({
+      ...row,
+      member_ids: row.member_ids ? row.member_ids.split(',').map(Number) : []
+    }));
+
     res.json({
       success: true,
-      data: rows
+      data: data
     });
   } catch (error) {
     console.error('Get workspaces error:', error);
@@ -41,11 +43,7 @@ router.get('/:id', authenticate, async (req, res) => {
       `SELECT w.*,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id) as total_tasks,
               (SELECT COUNT(*) FROM tasks WHERE workspace_id = w.id AND status = 'done') as completed_tasks,
-              COALESCE(
-                (SELECT array_agg(user_id ORDER BY user_id)
-                 FROM workspace_members WHERE workspace_id = w.id),
-                ARRAY[]::integer[]
-              ) as member_ids
+              (SELECT GROUP_CONCAT(user_id ORDER BY user_id) FROM workspace_members WHERE workspace_id = w.id) as member_ids
        FROM workspaces w
        WHERE w.id = ?`,
       [req.params.id]
@@ -67,12 +65,16 @@ router.get('/:id', authenticate, async (req, res) => {
       [req.params.id]
     );
 
+    // Convert member_ids from comma-separated string to array
+    const workspace = {
+      ...rows[0],
+      member_ids: rows[0].member_ids ? rows[0].member_ids.split(',').map(Number) : [],
+      members: members
+    };
+
     res.json({
       success: true,
-      data: {
-        ...rows[0],
-        members: members
-      }
+      data: workspace
     });
   } catch (error) {
     console.error('Get workspace error:', error);
