@@ -250,6 +250,45 @@ router.post('/:id/avatar', authenticate, upload.single('avatar'), async (req, re
   }
 });
 
+// Admin: reset another user's password (no current-password check).
+// Management only. The new password is hashed before storage.
+router.post('/:id/reset-password', authenticate, authorize('management'), async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password is required and must be at least 6 characters'
+      });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    const result = await pool.query(
+      'UPDATE users SET password = $1 WHERE id = $2 RETURNING id, email, name',
+      [hashed, req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error resetting password'
+    });
+  }
+});
+
 // Delete user (management only)
 router.delete('/:id', authenticate, authorize('management'), async (req, res) => {
   try {
