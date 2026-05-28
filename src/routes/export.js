@@ -26,11 +26,19 @@ const STATUS_FILL = {
   done: 'FFE3F8E8',
 };
 
-const formatDate = (d) =>
-  d ? new Date(d).toISOString().slice(0, 10) : '';
+const formatDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+
+const parseDate = (v) => {
+  if (!v) return undefined;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 10);
+};
 
 router.get('/tasks.xlsx', authenticate, async (req, res) => {
   try {
+    const from = parseDate(req.query.from);
+    const to = parseDate(req.query.to);
+
     let query = `
       SELECT t.id,
              w.project_code, t.issue_number,
@@ -48,25 +56,41 @@ router.get('/tasks.xlsx', authenticate, async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
-    let i = 1;
 
     if (req.user.role === 'employee') {
-      query += ` AND t.assignee_id = $${i++}`;
+      query += ' AND t.assignee_id = ?';
       params.push(req.user.id);
     } else if (req.user.role === 'team_lead') {
-      query += ` AND t.assignee_id IN (SELECT id FROM users WHERE team_id = $${i++})`;
+      query += ' AND t.assignee_id IN (SELECT id FROM users WHERE team_id = ?)';
       params.push(req.user.team_id);
+    }
+
+    if (from) {
+      query += ' AND DATE(t.created_at) >= ?';
+      params.push(from);
+    }
+    if (to) {
+      query += ' AND DATE(t.created_at) <= ?';
+      params.push(to);
     }
 
     query += ' ORDER BY w.project_code, t.issue_number';
 
-    const { rows } = await pool.query(query, params);
+    const [rows] = await pool.query(query, params);
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Ara Timesheet';
     workbook.created = new Date();
 
-    const sheet = workbook.addWorksheet('All Tasks', {
+    const sheetName =
+      from && to
+        ? 'Tasks ' + from + ' to ' + to
+        : from
+          ? 'Tasks since ' + from
+          : to
+            ? 'Tasks until ' + to
+            : 'All Tasks';
+    const sheet = workbook.addWorksheet(sheetName.slice(0, 31), {
       views: [{ state: 'frozen', ySplit: 1 }],
     });
 
@@ -88,40 +112,30 @@ router.get('/tasks.xlsx', authenticate, async (req, res) => {
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    headerRow.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF0052CC' },
-    };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0052CC' } };
     headerRow.alignment = { vertical: 'middle', horizontal: 'left' };
     headerRow.height = 22;
 
     rows.forEach((t) => {
       const row = sheet.addRow({
-        issueKey: t.project_code && t.issue_number
-          ? `${t.project_code}-${t.issue_number}`
-          : '',
+        issueKey: t.project_code && t.issue_number ? t.project_code + '-' + t.issue_number : '',
         title: t.title,
-        status: STATUS_LABEL[t.status] ?? t.status,
-        priority: PRIORITY_LABEL[t.priority] ?? t.priority,
-        assignee: t.assignee_name ?? '',
-        workspace: t.workspace_name ?? '',
-        assignedBy: t.assigned_by_name ?? '',
+        status: STATUS_LABEL[t.status] || t.status,
+        priority: PRIORITY_LABEL[t.priority] || t.priority,
+        assignee: t.assignee_name || '',
+        workspace: t.workspace_name || '',
+        assignedBy: t.assigned_by_name || '',
         estimated: Number(t.estimated_hours) || 0,
         logged: Number(t.logged_hours) || 0,
         deadline: formatDate(t.deadline),
         created: formatDate(t.created_at),
         completed: formatDate(t.completed_at),
-        description: t.description ?? '',
+        description: t.description || '',
       });
 
       const fill = STATUS_FILL[t.status];
       if (fill) {
-        row.getCell('status').fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: fill },
-        };
+        row.getCell('status').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
       }
       row.alignment = { vertical: 'top', wrapText: true };
     });
@@ -131,24 +145,17 @@ router.get('/tasks.xlsx', authenticate, async (req, res) => {
       to: { row: 1, column: sheet.columns.length },
     };
 
-    const filename = `ara-tasks-${formatDate(new Date())}.xlsx`;
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${filename}"`,
-    );
+    const filenameSuffix =
+      from && to ? from + '_to_' + to : from ? 'from-' + from : to ? 'until-' + to : formatDate(new Date());
+    const filename = 'ara-tasks-' + filenameSuffix + '.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
 
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
-    console.error('Export tasks error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error exporting tasks',
-    });
+    console.error('Export tasks error:', error.message, error.stack);
+    res.status(500).json({ success: false, message: 'Error exporting tasks: ' + error.message });
   }
 });
 
