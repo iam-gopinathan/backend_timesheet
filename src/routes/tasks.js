@@ -22,13 +22,31 @@ router.get('/', authenticate, async (req, res) => {
     `;
     const params = [];
 
-    // Filter by user role
-    if (req.user.role === 'employee') {
-      query += ` AND t.assignee_id = ?`;
-      params.push(req.user.id);
-    } else if (req.user.role === 'team_lead') {
-      query += ` AND t.assignee_id IN (SELECT id FROM users WHERE team_id = ?)`;
-      params.push(req.user.team_id);
+    // Workspace-membership bypass: when an employee explicitly filters by a
+    // workspace they belong to, show them every task in that workspace
+    // (including teammates'). This powers the Board view where someone
+    // selects a workspace and expects to see the whole team's progress, not
+    // only their own cards. Without this, the role filter below would hide
+    // teammate tasks even though the employee has legitimate access to the
+    // shared workspace.
+    let bypassRoleFilter = false;
+    if (workspace_id && req.user.role === 'employee') {
+      const [memberCheck] = await pool.query(
+        'SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ? LIMIT 1',
+        [workspace_id, req.user.id]
+      );
+      if (memberCheck.length > 0) bypassRoleFilter = true;
+    }
+
+    // Filter by user role (skipped when the workspace-member bypass kicked in)
+    if (!bypassRoleFilter) {
+      if (req.user.role === 'employee') {
+        query += ` AND t.assignee_id = ?`;
+        params.push(req.user.id);
+      } else if (req.user.role === 'team_lead') {
+        query += ` AND t.assignee_id IN (SELECT id FROM users WHERE team_id = ?)`;
+        params.push(req.user.team_id);
+      }
     }
 
     if (status) {
