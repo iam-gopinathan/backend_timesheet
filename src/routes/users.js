@@ -37,12 +37,15 @@ router.get('/', authenticate, authorize('management', 'team_lead'), async (req, 
   try {
     const { team_id, role } = req.query;
 
+    // Hide soft-deleted users (DELETE /users/:id sets is_active = false).
+    // Without this, deleted employees keep showing up in the management UI
+    // and it looks like the delete button does nothing.
     let query = `
       SELECT u.id, u.name, u.email, u.role, u.designation, u.team_id,
              u.avatar_url, u.joined_date, u.is_active, t.name as team_name
       FROM users u
       LEFT JOIN teams t ON u.team_id = t.id
-      WHERE 1=1
+      WHERE u.is_active = true
     `;
     const params = [];
 
